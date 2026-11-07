@@ -1,0 +1,4 @@
+import {mkdirSync,writeFileSync} from 'node:fs';
+const colors=['#d9d9cb','#c8d2c0','#e6d5ba','#bcc9c2','#d9c6b8','#c9c7b7','#e2dcbf','#bfcabd','#d5c9bb','#c7d3d0','#d7cfb7','#d7bfae','#c3ccaf','#d1d0c2','#c0c6b9','#e1ceba','#cdd4c6'];
+mkdirSync('public/tiles',{recursive:true});
+colors.forEach((color,id)=>writeFileSync(`public/tiles/tile-${String(id).padStart(2,'0')}.svg`,`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" fill="${color}"/><text x="64" y="76" text-anchor="middle" font-family="Arial,sans-serif" font-size="39" fill="#435244">${String(id).padStart(2,'0')}</text><text x="64" y="103" text-anchor="middle" font-family="Arial,sans-serif" font-size="8" letter-spacing="2" fill="#43524499">PLACEHOLDER</text></svg>`));
