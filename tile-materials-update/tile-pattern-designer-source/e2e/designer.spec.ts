@@ -1,0 +1,44 @@
+import {test,expect} from '@playwright/test';
+test.beforeEach(async({page})=>{await page.goto('/');await page.evaluate(()=>localStorage.clear());await page.reload();});
+async function paintStart(page:any){const c=page.getByRole('application');await c.scrollIntoViewIfNeeded();const box=await c.boundingBox();const cell=Math.min((box.width-72)/8,(box.height-72)/6,72);return {x:box.x+(box.width-cell*8)/2+cell/2,y:box.y+(box.height-cell*6)/2+cell/2,cell};}
+test('拖曳、橡皮擦、復原、重做、縮小確認與重新整理',async({page})=>{
+ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.getByRole('button',{name:'樣式 16',exact:true}).click();let p=await paintStart(page);await page.mouse.move(p.x,p.y);await page.mouse.down();await page.mouse.move(p.x+p.cell*3,p.y,{steps:12});await page.mouse.up();
+ await expect(page.locator('.project-stats')).toContainText('4 / 48');await page.getByTitle('復原 Ctrl+Z',{exact:true}).click();await expect(page.locator('.project-stats')).toContainText('0 / 48');await page.getByTitle('重做 Ctrl+Shift+Z').click();await expect(page.locator('.project-stats')).toContainText('4 / 48');
+ await page.getByRole('button',{name:'空白／橡皮擦',exact:true}).click();p=await paintStart(page);await page.mouse.click(p.x,p.y);await expect(page.locator('.project-stats')).toContainText('3 / 48');await page.waitForTimeout(600);await page.reload();await expect(page.locator('.project-stats')).toContainText('3 / 48');
+ await page.getByLabel('長度格數').fill('2');page.once('dialog',d=>d.dismiss());await page.getByRole('button',{name:'套用',exact:true}).click();await expect(page.locator('.project-stats')).toContainText('3 / 48');page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'套用',exact:true}).click();await expect(page.locator('.project-stats')).toContainText('1 / 12');expect(errors).toEqual([]);
+});
+test('所有樣式、分享自動載入、QR 圖片上傳與 PNG 像素',async({page})=>{
+ const data=await page.evaluate(async()=>{
+   const {createGrid}=await import('/src/model.ts' as string),{encode}=await import('/src/codec.ts' as string);const g=createGrid();g.tiles=g.tiles.map((_:number,i:number)=>i%18-1);return {g,code:encode(g)};
+ });await page.goto('/#design='+data.code);await page.reload();await expect(page.locator('.project-stats')).toContainText('45 / 48');
+ await page.getByRole('button',{name:'儲存／分享',exact:true}).click();const qr=page.getByAltText('包含完整設計進度的 QR Code');await expect(qr).toBeVisible();const src=(await qr.getAttribute('src'))!;
+ const recovered=await page.evaluate(async(src)=>{const {readQR}=await import('/src/qr.ts' as string);const blob=await (await fetch(src)).blob();return await readQR(new File([blob],'qr.png',{type:'image/png'}));},src);expect(recovered).toEqual(data.g);
+ await page.getByRole('button',{name:'關閉視窗'}).click();await page.getByRole('button',{name:'載入進度',exact:false}).click();page.once('dialog',d=>d.accept());await page.locator('input[type=file][accept="image/*"]:not([capture])').setInputFiles({name:'qr.png',mimeType:'image/png',buffer:Buffer.from(src.split(',')[1],'base64')});await expect(page.getByRole('dialog')).not.toBeVisible();await expect(page.locator('.project-stats')).toContainText('45 / 48');
+ const result=await page.evaluate(async()=>{const {createGrid,TILE_FILES}=await import('/src/model.ts' as string),{renderPNG,loadImage}=await import('/src/export.ts' as string);const g=createGrid(2,1);g.tiles=[-1,0];const blob=await renderPNG(g,128,false),url=URL.createObjectURL(blob),img=await loadImage(url),c=document.createElement('canvas');c.width=img.width;c.height=img.height;const ctx=c.getContext('2d')!;ctx.drawImage(img,0,0);const a=Array.from(ctx.getImageData(5,5,1,1).data),tile=Array.from(ctx.getImageData(128,0,128,128).data);ctx.clearRect(0,0,256,128);ctx.drawImage(await loadImage(TILE_FILES[0]),0,0,128,128);const expected=Array.from(ctx.getImageData(0,0,128,128).data);URL.revokeObjectURL(url);return {w:img.width,h:img.height,a,orientationMatches:tile.every((v,i)=>Math.abs(v-expected[i])<=2)};});expect(result).toEqual({w:256,h:128,a:[0,0,0,0],orientationMatches:true});
+});
+test('錯誤輸入、QR 容量、100 × 100 與本機重設',async({page})=>{
+ await page.getByRole('button',{name:'載入進度',exact:false}).click();await page.getByLabel('進度字串／分享連結').fill('TP1.broken');await page.getByRole('button',{name:'還原進度',exact:true}).click();await expect(page.getByRole('alert')).toBeVisible();await page.getByRole('button',{name:'關閉視窗'}).click();
+ const result=await page.evaluate(async()=>{const {createGrid}=await import('/src/model.ts' as string),{encode,decode}=await import('/src/codec.ts' as string),{makeQR}=await import('/src/qr.ts' as string);const g=createGrid(100,100);g.tiles=g.tiles.map((_:number,i:number)=>i%18-1);const code=encode(g);let rejected=false;try{await makeQR(code);}catch{rejected=true;}return {rejected,length:decode(code).tiles.length};});expect(result).toEqual({rejected:true,length:10000});
+ await page.getByLabel('長度格數').fill('100');await page.getByLabel('寬度格數').fill('100');await page.getByRole('button',{name:'套用',exact:true}).click();await expect(page.locator('.project-stats')).toContainText('0 / 10000');
+ page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'重設並清除本機存檔'}).click();await page.waitForTimeout(600);expect(await page.evaluate(()=>localStorage.getItem('tile-pattern-designer:v1'))).toBeNull();await page.reload();await expect(page.locator('.project-stats')).toContainText('0 / 48');
+});
+test('手機觸控、固定素材列與無水平溢出',async({browser})=>{
+ const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,deviceScaleFactor:2});const page=await context.newPage();await page.goto('http://127.0.0.1:5173');const p=await paintStart(page);await page.touchscreen.tap(p.x,p.y);await page.waitForTimeout(600);expect(await page.evaluate(async()=>{const {decode}=await import('/src/codec.ts' as string);return decode(localStorage.getItem('tile-pattern-designer:v1')!).tiles[0];})).toBe(0);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);const palette=await page.locator('.palette').boundingBox();expect(Math.round(palette!.y+palette!.height)).toBe(844);await page.screenshot({path:'test-results/mobile.png',fullPage:true});await context.close();
+});
+test('桌面畫面',async({page})=>{await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:'test-results/desktop.png',fullPage:true});});
+test('素面分類、兩種材質、存檔與 PNG 匯出',async({page})=>{
+ await page.getByRole('button',{name:'素面材質磚 · 2'}).click();await expect(page.getByRole('button',{name:'樣式 0',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'淺米色材質',exact:true}).click();let p=await paintStart(page);await page.mouse.click(p.x,p.y);
+ await page.getByRole('button',{name:'灰褐色材質',exact:true}).click();p=await paintStart(page);await page.mouse.click(p.x+p.cell,p.y);
+ await page.getByRole('button',{name:'儲存／分享',exact:true}).click();const code=await page.locator('dialog textarea[readonly]').inputValue();await page.getByRole('button',{name:'關閉視窗'}).click();
+ await page.goto('/#design='+code);await page.reload();await expect(page.locator('.project-stats')).toContainText('2 / 48');
+ const tiles=await page.evaluate(async(code)=>{const {decode}=await import('/src/codec.ts' as string);return decode(code).tiles.slice(0,2);},code);expect(tiles).toEqual([17,18]);
+ await page.getByRole('button',{name:'匯出圖片',exact:false}).click();const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下載 PNG 圖片'}).click();expect((await pending).suggestedFilename()).toMatch(/\.png$/);
+ await page.getByRole('button',{name:'素面材質磚 · 2'}).click();await page.screenshot({path:'test-results/plain-materials.png',fullPage:true});
+});
+test('損壞的分享連結不覆蓋原有本機備份',async({page})=>{
+ const p=await paintStart(page);await page.mouse.click(p.x,p.y);await expect(page.locator('.project-stats')).toContainText('1 / 48');await page.waitForTimeout(600);const code=await page.evaluate(()=>localStorage.getItem('tile-pattern-designer:v1'));
+ await page.goto('/#design=TP1.broken');await page.reload();await expect(page.getByRole('status')).toContainText('分享連結無法載入');await page.waitForTimeout(600);expect(await page.evaluate(()=>localStorage.getItem('tile-pattern-designer:v1'))).toBe(code);
+ await page.getByRole('button',{name:'載入進度',exact:false}).click();await page.getByRole('button',{name:'讀取本機備份'}).click();await expect(page.locator('.project-stats')).toContainText('1 / 48');
+});
